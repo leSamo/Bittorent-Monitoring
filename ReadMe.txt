@@ -2,6 +2,10 @@ BitTorrent network traffic detection
 Samuel Olekšák
 PDS 2022/23
 
+Requirements:
+Python 3.11
+Scapy 2.5.0
+
 Packet capture files:
 installation - first startup of qBittorrent client after installation without downloading or seeding anything
 startup - subsequent startup of qBittorrent client without downloading or seeding anything
@@ -32,6 +36,7 @@ Script:
             2. Bootstrap node port (6881)
             3. Multicast join groups (239.192.152.143, 239.255.255.250)
             4. Bisect UDP packet content if it conforms to BT-DHT specification
+            5. Detect DNS queries containing torrent or dht (low reliability)
             ?. SSDP (???)
         With downloading/seeding:
             1. LSD protocol with BT-SEARCH
@@ -51,6 +56,8 @@ Documentation:
     - Cons of using bootstrap nodes detection (list isn't comprehensive and can change, needs to be maintained, adversary could setup their own bootstrap nodes/proxy), port number can also be changed
     - Bdecoding
     - BT-DTH commands (get_peers, etc.)
+    - Boostrap node detection:
+        - node is a bootstrap node unless it was delivered by previous packet
 
 Known bootstrap nodes: (usually port 6881)
     - router.utorrent.com (BitTorrent company)
