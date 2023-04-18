@@ -68,13 +68,14 @@ class Node:
     id: bytes
     ip_address: bytes
     port: bytes
+    is_bootstrap: bool
 
     def __repr__(self):
         id = "Unknown (did not respond)" if self.id == "Unknown" else binascii.hexlify(self.id).decode()
-        return f"{id} {self.ip_address} {self.port}";
+        return f"{id.ljust(40)} {str(self.port).ljust(5)} {self.ip_address}";
 
-def detectBootstrapNodes(packets):
-    bootstrapNodes = []
+def detectNodes(packets):
+    detectedNodes = []
 
     for (index, packet) in enumerate(packets):
         if UDP in packet:
@@ -84,35 +85,51 @@ def detectBootstrapNodes(packets):
                 obj = bdecode(bytes(packet[UDP].payload))[0]
             except:
                 #print("Failed parsing bencoding for packet", index)
-                pass
+                continue
+
+            print(obj)
+
             # TODO: Maybe deduplicate?
-            if (b'a' in obj and b'bs' in obj[b'a'] and obj[b'a'][b'bs'] == 1 and b'id' in obj[b'a']):
+            # TODO: Check for get_peers command
+            if b'a' in obj and b'id' in obj[b'a']:
                 dst_ip = packet[IP].dst
                 dst_port = packet[UDP].dport
                 #id = obj[b'a'][b'id']
 
-                bootstrapNodes.append(Node("Unknown", dst_ip, dst_port))
+                if b'bs' in obj[b'a'] and obj[b'a'][b'bs'] == 1:
+                    detectedNodes.append(Node("Unknown", dst_ip, dst_port, True))
+                else:
+                    detectedNodes.append(Node("Unknown", dst_ip, dst_port, False))
+
 
             elif (b'r' in obj and b'id' in obj[b'r']):
                 src_ip = packet[IP].src
                 src_port = packet[UDP].sport
                 id = obj[b'r'][b'id']
             
-                for node in bootstrapNodes:
+                for node in detectedNodes:
                     if node.ip_address == src_ip and node.port == src_port:
                         node.id = id
                         break
                     
 
-    return bootstrapNodes
+    return detectedNodes
 
 
 if operation == "init":
     packets = rdpcap(pcap_file)
-    bootstrapNodes = detectBootstrapNodes(packets)
-    print("Detected boostrap nodes:")
-    print(f"ID                                       IP address   port")
+    detectedNodes = detectNodes(packets)
+    bootstrapNodes = list(filter(lambda node: node.is_bootstrap, detectedNodes))
+    print("Detected boostrap nodes:\n")
+    print(f"ID                                       Port  IP address")
     for node in bootstrapNodes:
+        print(node)
+elif operation == "peers":
+    packets = rdpcap(pcap_file)
+    detectedNodes = detectNodes(packets)
+    print("Detected neighbor nodes:\n")
+    print(f"ID                                       Port  IP address")
+    for node in detectedNodes:
         print(node)
 else:
     eprint('Missing operation, use -init, -peers or -download')
