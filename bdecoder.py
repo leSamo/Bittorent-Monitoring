@@ -23,7 +23,7 @@ def bdecode(bencodedString):
                 dictSoFar[key] = value
             return (dictSoFar, rest[1:])
         else:
-            print("Error: First char is", chr(bencodedString[0]), "(", bencodedString[0], ")")
+            #print("Error: First char is", chr(bencodedString[0]), "(", bencodedString[0], ")")
             raise Exception
     #except:
         #print("Bdecoding error")

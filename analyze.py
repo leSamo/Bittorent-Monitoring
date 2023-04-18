@@ -68,25 +68,41 @@ class Node:
     id: bytes
     ip_address: bytes
     port: bytes
+
     def __repr__(self):
-        return f"{binascii.hexlify(self.id).decode()} {self.ip_address} {self.port}";
+        id = "Unknown (did not respond)" if self.id == "Unknown" else binascii.hexlify(self.id).decode()
+        return f"{id} {self.ip_address} {self.port}";
 
 def detectBootstrapNodes(packets):
     bootstrapNodes = []
 
     for (index, packet) in enumerate(packets):
         if UDP in packet:
-            #del packet[UDP]
-            #del packet[UDP]
-            print("UDP packet", index);
-            obj = bdecode(bytes(packet[UDP].payload))[0]
-            #print(obj)
-            if (b'a' in obj and obj[b'a'] and b'bs' in obj[b'a'] and obj[b'a'][b'bs'] == 1 and b'id' in obj[b'a']):
+            obj = {}
+
+            try:
+                obj = bdecode(bytes(packet[UDP].payload))[0]
+            except:
+                #print("Failed parsing bencoding for packet", index)
+                pass
+            # TODO: Maybe deduplicate?
+            if (b'a' in obj and b'bs' in obj[b'a'] and obj[b'a'][b'bs'] == 1 and b'id' in obj[b'a']):
                 dst_ip = packet[IP].dst
                 dst_port = packet[UDP].dport
-                id = obj[b'a'][b'id']
+                #id = obj[b'a'][b'id']
 
-                bootstrapNodes.append(Node(id, dst_ip, dst_port))
+                bootstrapNodes.append(Node("Unknown", dst_ip, dst_port))
+
+            elif (b'r' in obj and b'id' in obj[b'r']):
+                src_ip = packet[IP].src
+                src_port = packet[UDP].sport
+                id = obj[b'r'][b'id']
+            
+                for node in bootstrapNodes:
+                    if node.ip_address == src_ip and node.port == src_port:
+                        node.id = id
+                        break
+                    
 
     return bootstrapNodes
 
