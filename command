@@ -1,0 +1,1 @@
+tshark -r file.pcapng -T fields -E separator=";" -d udp.port==47222,bt-dht -e frame.time_relative -e ip.src -e ip.dst -e bt-dht.ip -e bt-dht.port -e bt-dht.bencoded.string "bt-dht" > file.csv

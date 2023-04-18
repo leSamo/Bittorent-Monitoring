@@ -59,6 +59,15 @@ Documentation:
     - Boostrap node detection:
         - node is a bootstrap node unless it was delivered by previous packet
 
+Recommend document structure:
+    1. Description of BitTorrent architecture and communication.
+    2. Your experiments with BitTorrent client and findings.
+    3. Description of detection method(s) for BitTorrent traffic.
+    4. Description of implemented application, i.e., how application operates, how is compiled, what parameters expects, how can be run.
+    5. Testing of the application on created datasets, results, evaluation.
+    6. Discussion of the results.
+    7. Conclusion and contribution.
+
 Known bootstrap nodes: (usually port 6881)
     - router.utorrent.com (BitTorrent company)
     - router.bittorrent.com (BitTorrent company)
