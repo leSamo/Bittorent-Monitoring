@@ -40,3 +40,5 @@ print(bdecode(b"d1:ad2:id20:abcdefghij0123456789e1:q4:ping1:t2:aa1:y1:qe"))
 print(bdecode(b"d1:c1:d1:dde4:dictd1:a1:b3:inti123e5:list1le5:list2li123e4:ahojdeli1ei2e3:caued1:5i6eeee3:inti-42e1:llee"))
 #print(bdecode(b"d10:created by18:qBittorrent v4.5.013:creation datei1676736717e4:infod6:lengthi16e4:name7:PDS.txt12:piece lengthi16384e6:pieces20:�>���ʪ�x�amt���'\�Yee"))
 """
+
+print(bdecode(b"d6:lengthi16e4:name7:PDS.txt12:piece lengthi16384ee"))
