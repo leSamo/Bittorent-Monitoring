@@ -243,14 +243,17 @@ elif operation == "rtable":
                             
                             client_peers[client_id].extend(nodes)
 
-    for peer in client_peers.keys():
-        print("\nRouting table of", peer)
-        client_peers[peer].sort(key=lambda node: node.distance)
+    for single_client_peers in client_peers.keys():
+        print("\nRouting table of", single_client_peers)
 
-        preivousDistance = -1
-        for node in client_peers[peer]:
-            if (node.distance > preivousDistance):
-                preivousDistance = node.distance
+        # deduplicate entries and sort them by distance ascendingly
+        client_peers[single_client_peers] = list(set(client_peers[single_client_peers]))
+        client_peers[single_client_peers].sort(key=lambda node: node.distance)
+
+        previousDistance = -1
+        for node in client_peers[single_client_peers]:
+            if (node.distance > previousDistance):
+                previousDistance = node.distance
                 print("\ndistance", node.distance)
             print(node)
         print()
