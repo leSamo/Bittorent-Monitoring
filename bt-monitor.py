@@ -16,6 +16,9 @@ from node import Node
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
+def toHex(rawBytes):
+    return binascii.hexlify(rawBytes).decode()
+
 HELP_STRING = """
 bt-monitor - script for monitoring of BitTorrent traffic in LAN
 Usage:
@@ -96,40 +99,45 @@ def detectReceivedNodes(packets):
     detectedNodes = set()
     dnsReceivedAddresses = getDnsReceivedIps(packets)
 
+    # Inspect all UDP packets
     for packet in packets:
         if UDP in packet:
-            obj = {}
+            bhtPayload = {}
 
             # If a UDP packet fails bdecoding we ignore it
             # because its either malformed or not BT-DHT at all
             try:
-                obj, _ = bdecode(bytes(packet[UDP].payload))
+                bhtPayload, _ = bdecode(bytes(packet[UDP].payload))
             except:
                 continue
 
             # TODO: Check for get_peers command
-            if b'a' in obj and b'id' in obj[b'a']:
+
+            # handle BT-DHT requests
+            if b'a' in bhtPayload and b'id' in bhtPayload[b'a']:
                 dst_ip = packet[IP].dst
                 dst_port = packet[UDP].dport
                 #id = obj[b'a'][b'id']
 
-                # if bencoding contains bs: 1 or IP address was received by DNS, consider it bootstrap
-                if (b'bs' in obj[b'a'] and obj[b'a'][b'bs'] == 1) or dst_ip in dnsReceivedAddresses:
+                # If bencoding contains { bs: 1 } or IP address was received by DNS, consider it bootstrap
+                # Save destination IP address and port without the ID for now
+                # ID will be possibly filled out later when response in received
+                if (b'bs' in bhtPayload[b'a'] and bhtPayload[b'a'][b'bs'] == 1) or dst_ip in dnsReceivedAddresses:
                     detectedNodes.add(Node(b"Unknown", dst_ip, dst_port, True, -1))
                 else:
                     detectedNodes.add(Node(b"Unknown", dst_ip, dst_port, False, -1))
 
-
-            elif (b'r' in obj and b'id' in obj[b'r']):
+            # Handle BT-DHT responses
+            elif (b'r' in bhtPayload and b'id' in bhtPayload[b'r']):
                 src_ip = packet[IP].src
                 src_port = packet[UDP].sport
-                id = obj[b'r'][b'id']
+                id = bhtPayload[b'r'][b'id']
 
+                # Match the received ID to source IP and port in our database
                 for node in detectedNodes:
                     if node.ip_address == src_ip and node.port == src_port:
                         node.id = id
                         break
-                    
 
     return detectedNodes
 
@@ -175,7 +183,6 @@ if operation == "init":
         print(node)
 
 elif operation == "peers":
-    packets = rdpcap(pcap_file)
     receivedNodes = detectReceivedNodes(packets)
     print("Detected neighbor nodes:\n")
     print(f"ID                                       Port  IP address")
@@ -186,38 +193,41 @@ elif operation == "download":
     pass
 
 elif operation == "rtable":
-    # find get peer requests and print id in them
-    packets = rdpcap(pcap_file)
-
-    my_ids = []
+    client_ids = []
     transaction_ids = {}
-    my_peers = {}
+    client_peers = {}
 
+    # Inspect all UDP packets
     for (index, packet) in enumerate(packets):
         if UDP in packet:
-            obj = {}
+            bhtPayload = {}
 
+            # If a UDP packet fails bdecoding we ignore it
+            # because its either malformed or not BT-DHT at all
             try:
-                obj, _ = bdecode(bytes(packet[UDP].payload))
+                bhtPayload, _ = bdecode(bytes(packet[UDP].payload))
             except:
-                #print("Failed parsing bencoding for packet", index)
                 continue
-            if b'q' in obj and obj[b'q'] == b'get_peers':
-                my_id = binascii.hexlify(obj[b'a'][b'id']).decode()
-                if not my_id in my_ids:
-                    my_ids.append(my_id)
-                    transaction_ids[my_id] = [binascii.hexlify(obj[b't']).decode()]
-                    my_peers[my_id] = []
+            
+            # handle BT-DHT requests
+            if b'q' in bhtPayload and bhtPayload[b'q'] == b'get_peers':
+                client_id = toHex(bhtPayload[b'a'][b'id'])
+                if not client_id in client_ids:
+                    client_ids.append(client_id)
+                    transaction_ids[client_id] = [toHex(bhtPayload[b't'])]
+                    client_peers[client_id] = []
 
-                transaction_ids[my_id].append(binascii.hexlify(obj[b't']).decode())
-            elif b'y' in obj and obj[b'y'] == b'r':
-                trans_id = binascii.hexlify(obj[b't']).decode()
-                for my_id in my_ids:
-                    transactions = transaction_ids[my_id]
+                transaction_ids[client_id].append(toHex(bhtPayload[b't']))
+            
+            # handle BT-DHT responses
+            elif b'y' in bhtPayload and bhtPayload[b'y'] == b'r':
+                trans_id = toHex(bhtPayload[b't'])
+                for client_id in client_ids:
+                    transactions = transaction_ids[client_id]
 
                     if trans_id in transactions:
-                        if b'r' in obj and b'nodes' in obj[b'r']:
-                            node_list = obj[b'r'][b'nodes']
+                        if b'r' in bhtPayload and b'nodes' in bhtPayload[b'r']:
+                            node_list = bhtPayload[b'r'][b'nodes']
                             sliced_ids = [node_list[i:i+26] for i in range(0, len(node_list), 26)]
 
                             nodes = list(map(
@@ -226,19 +236,19 @@ elif operation == "rtable":
                                     socket.inet_ntoa(x[20:24]),
                                     int.from_bytes(x[24:26], byteorder='big'),
                                     False,
-                                    kademlia_distance(my_id, binascii.hexlify(x[0:20]).decode())
+                                    kademlia_distance(client_id, toHex(x[0:20]))
                                 ),
                                 sliced_ids
                             ))
                             
-                            my_peers[my_id].extend(nodes)
+                            client_peers[client_id].extend(nodes)
 
-    for peer in my_peers.keys():
+    for peer in client_peers.keys():
         print("\nRouting table of", peer)
-        my_peers[peer].sort(key=lambda node: node.distance)
+        client_peers[peer].sort(key=lambda node: node.distance)
 
         preivousDistance = -1
-        for node in my_peers[peer]:
+        for node in client_peers[peer]:
             if (node.distance > preivousDistance):
                 preivousDistance = node.distance
                 print("\ndistance", node.distance)
