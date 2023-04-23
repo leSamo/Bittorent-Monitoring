@@ -12,6 +12,20 @@ import getopt
 import sys
 from node import Node
 
+BITTORRENT_MSG_TYPES = {
+    0: "keep_alive",
+    1: "choke",
+    2: "unchoke",
+    3: "interested",
+    4: "not_interested",
+    5: "have",
+    6: "bitfield",
+    7: "request",
+    8: "piece",
+    9: "cancel",
+    10: "port"
+}
+
 # print to stderr
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
@@ -114,7 +128,7 @@ def detectReceivedNodes(packets):
             # TODO: Check for get_peers command
 
             # handle BT-DHT requests
-            if b'a' in bhtPayload and b'id' in bhtPayload[b'a']:
+            if b'a' in bhtPayload and b'id' in bhtPayload[b'a'] and b'q' in bhtPayload and bhtPayload[b'q'] == b'get_peers':
                 dst_ip = packet[IP].dst
                 dst_port = packet[UDP].dport
                 #id = obj[b'a'][b'id']
@@ -123,9 +137,9 @@ def detectReceivedNodes(packets):
                 # Save destination IP address and port without the ID for now
                 # ID will be possibly filled out later when response in received
                 if (b'bs' in bhtPayload[b'a'] and bhtPayload[b'a'][b'bs'] == 1) or dst_ip in dnsReceivedAddresses:
-                    detectedNodes.add(Node(b"Unknown", dst_ip, dst_port, True, -1))
+                    detectedNodes.add(Node("Unknown", dst_ip, dst_port, True, -1))
                 else:
-                    detectedNodes.add(Node(b"Unknown", dst_ip, dst_port, False, -1))
+                    detectedNodes.add(Node("Unknown", dst_ip, dst_port, False, -1))
 
             # Handle BT-DHT responses
             elif (b'r' in bhtPayload and b'id' in bhtPayload[b'r']):
@@ -190,7 +204,83 @@ elif operation == "peers":
         print(node)
 
 elif operation == "download":
-    pass
+    files = {}
+    handshaked_ips = set()
+
+    for packet in packets:
+        if TCP in packet:
+            payload = bytes(packet[TCP].payload)
+
+            if len(payload) > 19:
+                protocolNameLength = int(payload[0])
+                if protocolNameLength == 19 and payload[1:20] == b'BitTorrent protocol':
+                    reserved = payload[20:28]
+                    info_hash = payload[28:48]
+                    peer_id = payload[48:68]
+
+                    # TODO: dedupe
+                    if toHex(info_hash) in files:
+                        files[toHex(info_hash)]['contributes'].append({
+                                "id": toHex(peer_id),
+                                "ip": packet[IP].dst,
+                                "port": packet[TCP].dport,
+                                "bytes": 0
+                            })
+                    else:
+                        files[toHex(info_hash)] = {
+                            "size": 0,
+                            "streams": 0,
+                            "pieces": set(),
+                            "contributes": [{
+                                "id": toHex(peer_id),
+                                "ip": packet[IP].dst,
+                                "port": packet[TCP].dport,
+                                "bytes": 0
+                            }]
+                        }
+
+                    handshaked_ips.add(packet[IP].dst)
+
+                    #print("Handshake", toHex(reserved), toHex(info_hash), toHex(peer_id))
+            
+            if packet[IP].src or packet[IP].dst in handshaked_ips:
+                if len(payload) > 4:
+                    message_length = int.from_bytes(payload[0:4], byteorder='big')
+
+                    # handle piece messages
+                    if int(payload[4]) == 7 and message_length < 1e6:
+                        msg_type = "piece"
+                        piece_index = int.from_bytes(payload[5:9], byteorder='big')
+                        piece_offset = int.from_bytes(payload[9:13], byteorder='big')
+
+                        # find out info_hash based on handshake with this src_ip
+                        info_hash = None
+                        
+                        for file in files.keys():
+                            for (index, contributor) in enumerate(files[file]["contributes"]):
+                                if contributor["ip"] == packet[IP].src and contributor["port"] == packet[TCP].sport:
+                                    info_hash = file
+                                    files[info_hash]["contributes"][index]["bytes"] += message_length - 13
+ 
+                        files[info_hash]["streams"] += 1
+                        files[info_hash]["size"] += message_length - 13
+                        files[info_hash]["pieces"].add(piece_index)
+    
+                        #print(message_length, msg_type, piece_index, piece_offset)
+            
+    #print(handshaked_ips)
+
+    for file in files.keys():
+        print("Infohash:", file)
+        print("Size:", files[file]["size"], "B")
+        print("Pieces:", len(files[file]["pieces"]))
+        print("Contributors:")
+        
+        for contributor in files[file]["contributes"]:
+            if contributor["bytes"] > 0:
+                print("-", contributor["ip"] + ":" + str(contributor["port"]), contributor["bytes"], "B")
+        print()
+
 
 elif operation == "rtable":
     client_ids = []
