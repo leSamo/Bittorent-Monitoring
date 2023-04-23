@@ -16,6 +16,16 @@ from node import Node
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
+HELP_STRING = """
+bt-monitor - script for monitoring of BitTorrent traffic in LAN
+Usage:
+python3 bt-monitor -pcap <path_to_pcap_file> [-init|-peers|-download|-rtable]
+  -init: returns a list of detected bootstrap nodes
+  -peers: returns a list of detected neighbors
+  -download: returns file info_hash, size, chunks, contributes
+  -rtable: returns the routing table of the client
+"""
+
 # ----------------
 # ARGUMENT PARSING
 # ----------------
@@ -32,14 +42,18 @@ for i in range(len(cli_arguments)):
         cli_arguments[i] = "-" + cli_arguments[i]
 
 try:
-    opts, args = getopt.getopt(cli_arguments, "h", ["help", "pcap=", "init", "peers", "download", "rtable"])
+    opts, args = getopt.getopt(
+        cli_arguments,
+        "h",
+        ["help", "pcap=", "init", "peers", "download", "rtable"]
+    )
 except getopt.GetoptError:
-    eprint('TODO: Help')
+    print(HELP_STRING)
     sys.exit(1)
 
 for opt, arg in opts:
     if opt == '-h' or opt == '--help':
-        eprint('TODO: Help')
+        print(HELP_STRING)
         sys.exit()
     elif opt == '--pcap':
         pcap_file = arg
@@ -59,8 +73,10 @@ if pcap_file == None:
     eprint('Missing input file, use -pcap argument')
     sys.exit(1)
 
-def detectNodes(packets):
-    detectedNodes = set()
+# Accepts list of raw packets
+# Inspects all DNS packets and returns a list of IPv4 and IPv6 addresses which
+# were received inside DNS responses
+def getDnsReceivedIps(packets):
     dnsReceivedAddresses = set()
     
     for packet in packets:
@@ -69,18 +85,26 @@ def detectNodes(packets):
             dns_layer = packet.getlayer(DNSRR)
 
             for i in range(packet[DNS].ancount):
-                if dns_layer[i].type == 1 or dns_layer[i].type == 28: # Check if DNS query is for type A (IPv4)
+                 # Check if DNS response contains A (IPv4) or AAAA (IPv6) record
+                if dns_layer[i].type == 1 or dns_layer[i].type == 28:
                     ip = dns_layer[i].rdata
                     dnsReceivedAddresses.add(ip)
 
-    for (index, packet) in enumerate(packets):
+    return dnsReceivedAddresses
+
+def detectReceivedNodes(packets):
+    detectedNodes = set()
+    dnsReceivedAddresses = getDnsReceivedIps(packets)
+
+    for packet in packets:
         if UDP in packet:
             obj = {}
 
+            # If a UDP packet fails bdecoding we ignore it
+            # because its either malformed or not BT-DHT at all
             try:
-                obj = bdecode(bytes(packet[UDP].payload))[0]
+                obj, _ = bdecode(bytes(packet[UDP].payload))
             except:
-                #print("Failed parsing bencoding for packet", index)
                 continue
 
             # TODO: Check for get_peers command
@@ -109,12 +133,15 @@ def detectNodes(packets):
 
     return detectedNodes
 
+# accepts two ids in hex format and returns in how many
+# bits their prefixes match
 def kademlia_distance(node_id1: str, node_id2: str) -> int:
+    # convert hex to binary, remove 0b prefix and pad it to 160 bits
     id1 = bin(int(node_id1, 16))[2:].zfill(160)
     id2 = bin(int(node_id2, 16))[2:].zfill(160)
     
-    # Compare the binary strings bit by bit to find the prefix length
     prefix_length = 0
+
     for i in range(len(id1)):
         if id1[i] == id2[i]:
             prefix_length += 1
@@ -123,23 +150,41 @@ def kademlia_distance(node_id1: str, node_id2: str) -> int:
     
     return prefix_length
 
-if operation == "init":
+# ------------------------------
+# LOADING PACKETS FROM PCAP FILE
+# ------------------------------
+
+try:
     packets = rdpcap(pcap_file)
-    detectedNodes = detectNodes(packets)
-    bootstrapNodes = list(filter(lambda node: node.is_bootstrap, detectedNodes))
+except Exception as e:
+    eprint('Failed to load packets from pcap file', e)
+    sys.exit(1)
+
+# ------------------------------------
+# BRANCH PROGRAM BY SELECTED OPERATION
+# ------------------------------------
+
+if operation == "init":
+    receivedNodes = detectReceivedNodes(packets)
+    bootstrapNodes = list(filter(lambda node: node.is_bootstrap, receivedNodes))
+
     print("Detected boostrap nodes:\n")
     print(f"ID                                       Port  IP address")
+
     for node in bootstrapNodes:
         print(node)
+
 elif operation == "peers":
     packets = rdpcap(pcap_file)
-    detectedNodes = detectNodes(packets)
+    receivedNodes = detectReceivedNodes(packets)
     print("Detected neighbor nodes:\n")
     print(f"ID                                       Port  IP address")
-    for node in detectedNodes:
+    for node in receivedNodes:
         print(node)
+
 elif operation == "download":
     pass
+
 elif operation == "rtable":
     # find get peer requests and print id in them
     packets = rdpcap(pcap_file)
@@ -153,7 +198,7 @@ elif operation == "rtable":
             obj = {}
 
             try:
-                obj = bdecode(bytes(packet[UDP].payload))[0]
+                obj, _ = bdecode(bytes(packet[UDP].payload))
             except:
                 #print("Failed parsing bencoding for packet", index)
                 continue
@@ -199,6 +244,7 @@ elif operation == "rtable":
                 print("\ndistance", node.distance)
             print(node)
         print()
+
 else:
     eprint('Missing operation, use -init, -peers, -download or -rtable')
     sys.exit(1)
