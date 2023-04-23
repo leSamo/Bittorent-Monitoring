@@ -5,7 +5,6 @@ from dataclasses import dataclass
 import socket
 import getopt
 import sys
-import csv
 
 # BOOTSTRAP NODES:
 # y: q (message type: request)
@@ -36,7 +35,7 @@ for i in range(len(cli_arguments)):
         cli_arguments[i] = "-" + cli_arguments[i]
 
 try:
-    opts, args = getopt.getopt(cli_arguments, "hv", ["help", "verbose", "pcap=", "init", "peers", "download"])
+    opts, args = getopt.getopt(cli_arguments, "hv", ["help", "verbose", "pcap=", "init", "peers", "download", "rtable"])
 except getopt.GetoptError:
     eprint('TODO: Help')
     sys.exit(1)
@@ -55,6 +54,8 @@ for opt, arg in opts:
         operation = 'download'
     elif opt == '--peers':
         operation = 'peers'
+    elif opt == '--rtable':
+        operation = 'rtable'
     else:
         eprint('Unknown argument:', opt)
         sys.exit(1)
@@ -91,8 +92,6 @@ def detectNodes(packets):
                     ip = dns_layer[i].rdata
                     dnsReceivedAddresses.add(ip)
 
-    print(dnsReceivedAddresses)
-
     for (index, packet) in enumerate(packets):
         if UDP in packet:
             obj = {}
@@ -103,18 +102,17 @@ def detectNodes(packets):
                 #print("Failed parsing bencoding for packet", index)
                 continue
 
-            #print(obj)
-
             # TODO: Check for get_peers command
             if b'a' in obj and b'id' in obj[b'a']:
                 dst_ip = packet[IP].dst
                 dst_port = packet[UDP].dport
                 #id = obj[b'a'][b'id']
 
+                # if bencoding contains bs: 1 or IP address was received by DNS, consider it bootstrap
                 if (b'bs' in obj[b'a'] and obj[b'a'][b'bs'] == 1) or dst_ip in dnsReceivedAddresses:
-                    detectedNodes.add(Node("Unknown", dst_ip, dst_port, True))
+                    detectedNodes.add(Node(b"Unknown", dst_ip, dst_port, True))
                 else:
-                    detectedNodes.add(Node("Unknown", dst_ip, dst_port, False))
+                    detectedNodes.add(Node(b"Unknown", dst_ip, dst_port, False))
 
 
             elif (b'r' in obj and b'id' in obj[b'r']):
@@ -130,6 +128,19 @@ def detectNodes(packets):
 
     return detectedNodes
 
+def kademlia_distance(node_id1: str, node_id2: str) -> int:
+    id1 = bin(int(node_id1, 16))[2:].zfill(160)
+    id2 = bin(int(node_id2, 16))[2:].zfill(160)
+    
+    # Compare the binary strings bit by bit to find the prefix length
+    prefix_length = 0
+    for i in range(len(id1)):
+        if id1[i] == id2[i]:
+            prefix_length += 1
+        else:
+            break
+    
+    return prefix_length
 
 if operation == "init":
     packets = rdpcap(pcap_file)
@@ -146,6 +157,68 @@ elif operation == "peers":
     print(f"ID                                       Port  IP address")
     for node in detectedNodes:
         print(node)
+elif operation == "download":
+    pass
+elif operation == "rtable":
+    # find get peer requests and print id in them
+    packets = rdpcap(pcap_file)
+
+    my_ids = []
+    transaction_ids = {}
+    my_peers = {}
+
+    for (index, packet) in enumerate(packets):
+        if UDP in packet:
+            obj = {}
+
+            try:
+                obj = bdecode(bytes(packet[UDP].payload))[0]
+            except:
+                #print("Failed parsing bencoding for packet", index)
+                continue
+            if b'q' in obj and obj[b'q'] == b'get_peers':
+                my_id = binascii.hexlify(obj[b'a'][b'id']).decode()
+                if not my_id in my_ids:
+                    my_ids.append(my_id)
+                    transaction_ids[my_id] = [binascii.hexlify(obj[b't']).decode()]
+                    my_peers[my_id] = []
+
+                transaction_ids[my_id].append(binascii.hexlify(obj[b't']).decode())
+            elif b'y' in obj and obj[b'y'] == b'r':
+                trans_id = binascii.hexlify(obj[b't']).decode()
+                for my_id in my_ids:
+                    transactions = transaction_ids[my_id]
+
+                    if trans_id in transactions:
+                        if b'r' in obj and b'nodes' in obj[b'r']:
+                            node_list = obj[b'r'][b'nodes']
+                            sliced_ids = [node_list[i:i+26] for i in range(0, len(node_list), 26)]
+
+                            nodes = list(map(
+                                lambda x: Node(
+                                    x[0:20],
+                                    socket.inet_ntoa(x[20:24]),
+                                    int.from_bytes(x[24:26], byteorder='big'),
+                                    False
+                                ),
+                                sliced_ids
+                            ))
+                            
+                            #print(nodes)
+
+                            my_peers[my_id].extend(nodes)
+
+                            #print(obj)
+
+    #print(my_ids)
+    #print(transaction_ids)
+
+    for peer in my_peers.keys():
+        print("Routing table of ", peer)
+        for node in my_peers[peer]:
+            print(node)
+            print(kademlia_distance(peer, binascii.hexlify(node.id).decode()))
+        print()
 else:
     eprint('Missing operation, use -init, -peers or -download')
     sys.exit(1)
