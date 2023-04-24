@@ -16,7 +16,7 @@ from node import Node
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
-def toHex(rawBytes):
+def to_hex(rawBytes):
     return binascii.hexlify(rawBytes).decode()
 
 # string to be printed when program is run with -h or --help switch
@@ -77,11 +77,15 @@ if pcap_file == None:
     eprint('Missing input file, use -pcap argument')
     sys.exit(1)
 
+# ------------------
+# DNS PACKET PARSING
+# ------------------
+
 # Accepts list of raw packets
 # Inspects all DNS packets and returns a list of IPv4 and IPv6 addresses which
 # were received inside DNS responses
-def getDnsReceivedIps(packets):
-    dnsReceivedAddresses = set()
+def get_dns_received_ips(packets):
+    dns_received_addresses = set()
     
     for packet in packets:
         # Check if packet is a DNS response and extract IP address
@@ -92,60 +96,71 @@ def getDnsReceivedIps(packets):
                  # Check if DNS response contains A (IPv4) or AAAA (IPv6) record
                 if dns_layer[i].type == 1 or dns_layer[i].type == 28:
                     ip = dns_layer[i].rdata
-                    dnsReceivedAddresses.add(ip)
+                    dns_received_addresses.add(ip)
 
-    return dnsReceivedAddresses
+    return dns_received_addresses
 
-def detectReceivedNodes(packets):
-    detectedNodes = set()
+# ------------------
+# DHT PACKET PARSING
+# ------------------
+
+# Expects list of raw packets
+# Returns a tuple - list of detected nodes in Node dataclass and a dictionary
+# of transaction ids along with the number of packets that used that id
+def detect_received_nodes(packets):
+    detected_nodes = set()
     transaction_ids = {}
-    dnsReceivedAddresses = getDnsReceivedIps(packets)
+    dns_received_addresses = get_dns_received_ips(packets)
 
     # Inspect all UDP packets
     for packet in packets:
         if UDP in packet:
-            bhtPayload = {}
+            bht_payload = {}
 
             # If a UDP packet fails bdecoding we ignore it
             # because its either malformed or not BT-DHT at all
             try:
-                bhtPayload, _ = bdecode(bytes(packet[UDP].payload))
+                bht_payload, _ = bdecode(bytes(packet[UDP].payload))
             except:
                 continue
-
-            if b't' in bhtPayload:
-                if toHex(bhtPayload[b't']) in transaction_ids:
-                    transaction_ids[toHex(bhtPayload[b't'])] += 1
+            
+            # Extract and save transaction ids
+            if b't' in bht_payload:
+                if to_hex(bht_payload[b't']) in transaction_ids:
+                    transaction_ids[to_hex(bht_payload[b't'])] += 1
                 else:
-                    transaction_ids[toHex(bhtPayload[b't'])] = 1
+                    transaction_ids[to_hex(bht_payload[b't'])] = 1
 
-            # handle BT-DHT requests
-            if b'a' in bhtPayload and b'id' in bhtPayload[b'a'] and b'q' in bhtPayload and bhtPayload[b'q'] == b'get_peers':
+            # Handle BT-DHT requests
+            if (b'a' in bht_payload and b'id' in bht_payload[b'a'] and
+                b'q' in bht_payload and bht_payload[b'q'] == b'get_peers'):
                 dst_ip = packet[IP].dst
                 dst_port = packet[UDP].dport
 
                 # If bencoding contains { bs: 1 } or IP address was received by DNS, consider it bootstrap
                 # Save destination IP address and port without the ID for now
                 # ID will be possibly filled out later when response in received
-                if (b'bs' in bhtPayload[b'a'] and bhtPayload[b'a'][b'bs'] == 1) or dst_ip in dnsReceivedAddresses:
-                    detectedNodes.add(Node("Unknown", dst_ip, dst_port, True, -1))
+                if (b'bs' in bht_payload[b'a'] and bht_payload[b'a'][b'bs'] == 1) or dst_ip in dns_received_addresses:
+                    detected_nodes.add(Node("Unknown", dst_ip, dst_port, True, -1))
                 else:
-                    detectedNodes.add(Node("Unknown", dst_ip, dst_port, False, -1))
+                    detected_nodes.add(Node("Unknown", dst_ip, dst_port, False, -1))
 
             # Handle BT-DHT responses
-            elif (b'r' in bhtPayload and b'id' in bhtPayload[b'r']):
+            elif (b'r' in bht_payload and b'id' in bht_payload[b'r']):
                 src_ip = packet[IP].src
                 src_port = packet[UDP].sport
-                id = bhtPayload[b'r'][b'id']
+                id = bht_payload[b'r'][b'id']
 
                 # Match the received ID to source IP and port in our database
-                for node in detectedNodes:
+                for node in detected_nodes:
                     if node.ip_address == src_ip and node.port == src_port:
                         node.id = id
                         break
                 
-                if b'nodes' in bhtPayload[b'r']:
-                    node_list = bhtPayload[b'r'][b'nodes']
+                # Save all of the received nodes
+                # Nodes are stored packed in 26 bytes and need to be sliced by bits
+                if b'nodes' in bht_payload[b'r']:
+                    node_list = bht_payload[b'r'][b'nodes']
                     sliced_ids = [node_list[i:i+26] for i in range(0, len(node_list), 26)]
 
                     nodes = list(map(
@@ -159,19 +174,20 @@ def detectReceivedNodes(packets):
                         sliced_ids
                     ))
 
+                    # Match ids to nodes which have IP address + port already saved
                     for node in nodes:
                         added = False
 
-                        for detectedNode in detectedNodes:
-                            if node.ip_address == detectedNode.ip_address and node.port == detectedNode.port:
-                                detectedNode.id = node.id
+                        for detected_node in detected_nodes:
+                            if node.ip_address == detected_node.ip_address and node.port == detected_node.port:
+                                detected_node.id = node.id
                                 added = True
                                 break
                         
                         if not added:
-                            detectedNodes.add(node)
+                            detected_nodes.add(node)
                             
-    return (detectedNodes, transaction_ids)
+    return (detected_nodes, transaction_ids)
 
 # accepts two ids in hex format and returns in how many
 # bits their prefixes match
@@ -228,7 +244,7 @@ client_ip = get_client_ip(packets)
 # ------------------------------------
 
 if operation == "init":
-    receivedNodes, _ = detectReceivedNodes(packets)
+    receivedNodes, _ = detect_received_nodes(packets)
     bootstrapNodes = list(filter(lambda node: node.is_bootstrap, receivedNodes))
 
     print("Detected boostrap nodes:\n")
@@ -238,7 +254,7 @@ if operation == "init":
         print(node)
 
 elif operation == "peers":
-    receivedNodes, transaction_ids = detectReceivedNodes(packets)
+    receivedNodes, transaction_ids = detect_received_nodes(packets)
     print("Detected neighbor nodes:\n")
     print(f"ID                                       Port  IP address")
     for node in receivedNodes:
@@ -282,7 +298,7 @@ elif operation == "download":
                 info_hash = payload[48:68]
 
                 if dst == client_ip:
-                    udp_handshaked_ips.add((src, sport, connection_id, toHex(info_hash)))
+                    udp_handshaked_ips.add((src, sport, connection_id, to_hex(info_hash)))
 
         if TCP in packet:
             if len(payload) > 19:
@@ -292,7 +308,7 @@ elif operation == "download":
                     info_hash = payload[28:48]
                     peer_id = payload[48:68]
 
-                    files[toHex(info_hash)] = {
+                    files[to_hex(info_hash)] = {
                         "size": 0,
                         "streams": 0,
                         "pieces": [],
@@ -304,7 +320,7 @@ elif operation == "download":
                     }
 
                     if (packet[IP].dst != client_ip):
-                        tcp_handshaked_ips.add((packet[IP].dst, packet[TCP].dport, toHex(info_hash)))
+                        tcp_handshaked_ips.add((packet[IP].dst, packet[TCP].dport, to_hex(info_hash)))
 
     for handshaked_ip, handshaked_port, info_hash in tcp_handshaked_ips:
         tcp_streams = []
@@ -462,17 +478,17 @@ elif operation == "rtable":
             
             # handle BT-DHT requests
             if b'q' in bhtPayload and bhtPayload[b'q'] == b'get_peers' and packet[IP].src == owner_ip:
-                client_id = toHex(bhtPayload[b'a'][b'id'])
+                client_id = to_hex(bhtPayload[b'a'][b'id'])
                 if not client_id in client_ids:
                     client_ids.append(client_id)
-                    transaction_ids[client_id] = [toHex(bhtPayload[b't'])]
+                    transaction_ids[client_id] = [to_hex(bhtPayload[b't'])]
                     client_peers[client_id] = []
 
-                transaction_ids[client_id].append(toHex(bhtPayload[b't']))
+                transaction_ids[client_id].append(to_hex(bhtPayload[b't']))
             
             # handle BT-DHT responses
             elif b'y' in bhtPayload and bhtPayload[b'y'] == b'r':
-                trans_id = toHex(bhtPayload[b't'])
+                trans_id = to_hex(bhtPayload[b't'])
                 for client_id in client_ids:
                     transactions = transaction_ids[client_id]
 
@@ -487,7 +503,7 @@ elif operation == "rtable":
                                     socket.inet_ntoa(x[20:24]),
                                     int.from_bytes(x[24:26], byteorder='big'),
                                     False,
-                                    kademlia_distance(client_id, toHex(x[0:20]))
+                                    kademlia_distance(client_id, to_hex(x[0:20]))
                                 ),
                                 sliced_ids
                             ))
