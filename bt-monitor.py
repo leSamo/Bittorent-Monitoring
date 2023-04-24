@@ -98,6 +98,7 @@ def getDnsReceivedIps(packets):
 
 def detectReceivedNodes(packets):
     detectedNodes = set()
+    transaction_ids = {}
     dnsReceivedAddresses = getDnsReceivedIps(packets)
 
     # Inspect all UDP packets
@@ -112,11 +113,16 @@ def detectReceivedNodes(packets):
             except:
                 continue
 
+            if b't' in bhtPayload:
+                if toHex(bhtPayload[b't']) in transaction_ids:
+                    transaction_ids[toHex(bhtPayload[b't'])] += 1
+                else:
+                    transaction_ids[toHex(bhtPayload[b't'])] = 1
+
             # handle BT-DHT requests
             if b'a' in bhtPayload and b'id' in bhtPayload[b'a'] and b'q' in bhtPayload and bhtPayload[b'q'] == b'get_peers':
                 dst_ip = packet[IP].dst
                 dst_port = packet[UDP].dport
-                #id = obj[b'a'][b'id']
 
                 # If bencoding contains { bs: 1 } or IP address was received by DNS, consider it bootstrap
                 # Save destination IP address and port without the ID for now
@@ -166,8 +172,7 @@ def detectReceivedNodes(packets):
                         if not added:
                             detectedNodes.add(node)
                             
-
-    return detectedNodes
+    return (detectedNodes, transaction_ids)
 
 # accepts two ids in hex format and returns in how many
 # bits their prefixes match
@@ -224,7 +229,7 @@ client_ip = get_client_ip(packets)
 # ------------------------------------
 
 if operation == "init":
-    receivedNodes = detectReceivedNodes(packets)
+    receivedNodes, _ = detectReceivedNodes(packets)
     bootstrapNodes = list(filter(lambda node: node.is_bootstrap, receivedNodes))
 
     print("Detected boostrap nodes:\n")
@@ -234,11 +239,14 @@ if operation == "init":
         print(node)
 
 elif operation == "peers":
-    receivedNodes = detectReceivedNodes(packets)
+    receivedNodes, transaction_ids = detectReceivedNodes(packets)
     print("Detected neighbor nodes:\n")
     print(f"ID                                       Port  IP address")
     for node in receivedNodes:
         print(node)
+
+    connection_count = len([key for key, value in transaction_ids.items() if value > 1])
+    print("\nNumber of connections:", connection_count)
 
 elif operation == "download":
     files = {}
