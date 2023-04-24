@@ -10,7 +10,7 @@ import binascii
 import socket
 import getopt
 import sys
-from node import Node, UDPconn
+from node import Node
 
 # print to stderr
 def eprint(*args, **kwargs):
@@ -130,7 +130,6 @@ def detectReceivedNodes(packets):
                 if (b'bs' in bhtPayload[b'a'] and bhtPayload[b'a'][b'bs'] == 1) or dst_ip in dnsReceivedAddresses:
                     detectedNodes.add(Node("Unknown", dst_ip, dst_port, True, -1))
                 else:
-                    # TODO dont reset
                     detectedNodes.add(Node("Unknown", dst_ip, dst_port, False, -1))
 
             # Handle BT-DHT responses
@@ -250,7 +249,7 @@ elif operation == "peers":
 
 elif operation == "download":
     files = {}
-    handshaked_ips = set()
+    tcp_handshaked_ips = set()
     udp_handshaked_ips = set()
 
     for (index, packet) in enumerate(packets):
@@ -277,15 +276,14 @@ elif operation == "download":
 
             # Handle UDP Bittorrent handshake
             if len(payload) >= 88 and payload[20] == 19 and payload[21:40] == b'BitTorrent protocol':
-                print("UDP handshake", index)
                 dst = packet[IP].dst
                 src = packet[IP].src
                 connection_id = payload[2:4]
 
+                print("UDP handshake", index, toHex(connection_id))
+
                 if dst == client_ip:
-                    udp_handshaked_ips.add(UDPconn(src, connection_id, "inbound"))
-                elif src == client_ip:
-                    udp_handshaked_ips.add(UDPconn(dst, connection_id, "outbound"))
+                    udp_handshaked_ips.add((src, sport, connection_id))
 
         if TCP in packet:
             if len(payload) > 19:
@@ -295,29 +293,21 @@ elif operation == "download":
                     info_hash = payload[28:48]
                     peer_id = payload[48:68]
 
-                    # TODO: dedupe
-                    if toHex(info_hash) in files:
-                        files[toHex(info_hash)]['contributes'].append({
-                                "ip": packet[IP].dst,
-                                "port": dport,
-                                "pieces": []
-                            })
-                    else:
-                        files[toHex(info_hash)] = {
-                            "size": 0,
-                            "streams": 0,
-                            "pieces": [],
-                            "contributes": [{
-                                "ip": packet[IP].dst,
-                                "port": dport,
-                                "pieces": []
-                            }]
-                        }
+                    files[toHex(info_hash)] = {
+                        "size": 0,
+                        "streams": 0,
+                        "pieces": [],
+                        "contributes": [{
+                            "ip": packet[IP].dst,
+                            "port": dport,
+                            "pieces": []
+                        }]
+                    }
 
                     if (packet[IP].dst != client_ip):
-                        handshaked_ips.add((packet[IP].dst, packet[TCP].dport, toHex(info_hash)))
+                        tcp_handshaked_ips.add((packet[IP].dst, packet[TCP].dport, toHex(info_hash)))
 
-    for handshaked_ip, handshaked_port, info_hash in handshaked_ips:
+    for handshaked_ip, handshaked_port, info_hash in tcp_handshaked_ips:
         tcp_streams = []
         pieces = set()
         current_pieces = 0
@@ -398,6 +388,44 @@ elif operation == "download":
             "port": handshaked_port,
             "pieces": sorted(pieces)
         })
+
+    file_bytes = 0
+    for handshaked_ip, handshaked_port, connection_id in udp_handshaked_ips:
+        remaining_bytes = 0
+
+        for (packet_index, packet) in enumerate(packets):
+            if UDP in packet and IP in packet and packet[IP].src == handshaked_ip and packet[UDP].sport == handshaked_port:
+                payload = bytes(packet[UDP].payload)
+
+                if len(payload) >= 20:
+                    utp_header = payload[0:20]
+
+                    this_connection_id = utp_header[2:4]
+
+                    if this_connection_id == connection_id:
+                        utp_payload = payload[20:]
+
+                        if remaining_bytes < len(utp_payload):
+                            utp_payload = utp_payload[remaining_bytes:]
+
+                            if (len(utp_payload) >= 13 and utp_payload[4] == 7):
+                                message_length = int.from_bytes(utp_payload[0:4], byteorder='big')
+                                piece_index = int.from_bytes(utp_payload[5:9], byteorder='big')
+                                piece_offset = int.from_bytes(utp_payload[9:13], byteorder='big')
+
+                                print("aaa", piece_index)
+
+                                data_in_piece_length = len(utp_payload) - 13
+
+                                remaining_bytes = message_length - 9 - data_in_piece_length
+                                file_bytes += message_length - 9
+                        else:
+                            remaining_bytes -= len(utp_payload)
+                        
+                        print(remaining_bytes)
+
+        print("bbb", file_bytes)
+                    
 
     for file in files.keys():
         print("Infohash:", file)
