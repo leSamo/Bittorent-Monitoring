@@ -7,6 +7,7 @@
 import binascii
 from dataclasses import dataclass
 
+# Data strucure to hold information about a node in the Bittorrent network
 @dataclass
 class Node:
     id: bytes
@@ -22,6 +23,7 @@ class Node:
     def __hash__(self):
         return hash((self.id, self.ip_address, self.port, self.is_bootstrap, self.distance))
 
+# Data strucure to hold information about an active UDP connection using uTP protocol
 @dataclass
 class UDPconn:
     ip_address: bytes

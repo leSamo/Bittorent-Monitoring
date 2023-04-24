@@ -19,6 +19,7 @@ def eprint(*args, **kwargs):
 def toHex(rawBytes):
     return binascii.hexlify(rawBytes).decode()
 
+# string to be printed when program is run with -h or --help switch
 HELP_STRING = """
 bt-monitor - script for monitoring of BitTorrent traffic in LAN
 Usage:
@@ -98,7 +99,6 @@ def getDnsReceivedIps(packets):
 def detectReceivedNodes(packets):
     detectedNodes = set()
     dnsReceivedAddresses = getDnsReceivedIps(packets)
-    print(dnsReceivedAddresses)
 
     # Inspect all UDP packets
     for packet in packets:
@@ -112,10 +112,6 @@ def detectReceivedNodes(packets):
             except:
                 continue
 
-                """
-            if IPv6 in packet:
-                print(packet[IPv6].src, packet[IPv6].dst)
-                """
             # handle BT-DHT requests
             if b'a' in bhtPayload and b'id' in bhtPayload[b'a'] and b'q' in bhtPayload and bhtPayload[b'q'] == b'get_peers':
                 dst_ip = packet[IP].dst
@@ -222,7 +218,6 @@ except Exception as e:
     sys.exit(1)
 
 client_ip = get_client_ip(packets)
-print("Client IP:", client_ip)
 
 # ------------------------------------
 # BRANCH PROGRAM BY SELECTED OPERATION
