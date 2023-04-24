@@ -137,10 +137,12 @@ def detect_received_nodes(packets):
                 dst_ip = packet[IP].dst
                 dst_port = packet[UDP].dport
 
-                # If bencoding contains { bs: 1 } or IP address was received by DNS, consider it bootstrap
+                # If bencoding contains { bs: 1 } or IP address was received by DNS,
+                # consider it bootstrap
                 # Save destination IP address and port without the ID for now
                 # ID will be possibly filled out later when response in received
-                if (b'bs' in bht_payload[b'a'] and bht_payload[b'a'][b'bs'] == 1) or dst_ip in dns_received_addresses:
+                if ((b'bs' in bht_payload[b'a'] and bht_payload[b'a'][b'bs'] == 1)
+                    or dst_ip in dns_received_addresses):
                     detected_nodes.add(Node("Unknown", dst_ip, dst_port, True, -1))
                 else:
                     detected_nodes.add(Node("Unknown", dst_ip, dst_port, False, -1))
@@ -179,34 +181,40 @@ def detect_received_nodes(packets):
                         added = False
 
                         for detected_node in detected_nodes:
-                            if node.ip_address == detected_node.ip_address and node.port == detected_node.port:
+                            if (node.ip_address == detected_node.ip_address
+                                and node.port == detected_node.port):
                                 detected_node.id = node.id
                                 added = True
                                 break
                         
                         if not added:
                             detected_nodes.add(node)
-                            
+
     return (detected_nodes, transaction_ids)
 
-# accepts two ids in hex format and returns in how many
+# Accepts two ids in hex format and returns in how many
 # bits their prefixes match
-def kademlia_distance(node_id1: str, node_id2: str) -> int:
-    # convert hex to binary, remove 0b prefix and pad it to 160 bits
-    id1 = bin(int(node_id1, 16))[2:].zfill(160)
-    id2 = bin(int(node_id2, 16))[2:].zfill(160)
+def kademlia_distance(hex_id_1, hex_id_2):
+    # Convert hex to binary, remove 0b prefix and pad it to 160 bits
+    id_1 = bin(int(hex_id_1, 16))[2:].zfill(160)
+    id_2 = bin(int(hex_id_2, 16))[2:].zfill(160)
     
     prefix_bit_count = 0
 
-    for i in range(len(id1)):
-        if id1[i] != id2[i]:
+    # Count how many bits from the start match up
+    for i in range(len(id_1)):
+        if id_1[i] != id_2[i]:
             break
         else:
             prefix_bit_count += 1
     
     return prefix_bit_count
 
-# goes throught all of the packets and finds the IP address which is sender
+# --------------------
+# CLIENT ID RESOLUTION
+# --------------------
+
+# Goes throught all of the packets and finds the IP address which is sender
 # or receiver in most packets, which is most likely client's address
 def get_client_ip(packets):
     ip_addresses = {}
@@ -244,22 +252,27 @@ client_ip = get_client_ip(packets)
 # ------------------------------------
 
 if operation == "init":
-    receivedNodes, _ = detect_received_nodes(packets)
-    bootstrapNodes = list(filter(lambda node: node.is_bootstrap, receivedNodes))
+    received_nodes, _ = detect_received_nodes(packets)
+
+    # Get all nodes and filter out those, which are not bootstrap
+    bootstrap_nodes = list(filter(lambda node: node.is_bootstrap, received_nodes))
 
     print("Detected boostrap nodes:\n")
     print(f"ID                                       Port  IP address")
 
-    for node in bootstrapNodes:
+    for node in bootstrap_nodes:
         print(node)
 
 elif operation == "peers":
-    receivedNodes, transaction_ids = detect_received_nodes(packets)
+    received_nodes, transaction_ids = detect_received_nodes(packets)
+
     print("Detected neighbor nodes:\n")
     print(f"ID                                       Port  IP address")
-    for node in receivedNodes:
+    
+    for node in received_nodes:
         print(node)
 
+    # Only count connections which have at least 2 packets
     connection_count = len([key for key, value in transaction_ids.items() if value > 1])
     print("\nNumber of connections:", connection_count)
 
@@ -464,12 +477,12 @@ elif operation == "rtable":
     # Inspect all UDP packets
     for (index, packet) in enumerate(packets):
         if UDP in packet:
-            bhtPayload = {}
+            bht_payload = {}
 
             # If a UDP packet fails bdecoding we ignore it
             # because its either malformed or not BT-DHT at all
             try:
-                bhtPayload, _ = bdecode(bytes(packet[UDP].payload))
+                bht_payload, _ = bdecode(bytes(packet[UDP].payload))
             except:
                 continue
             
@@ -477,24 +490,24 @@ elif operation == "rtable":
                 owner_ip = packet[IP].src
             
             # handle BT-DHT requests
-            if b'q' in bhtPayload and bhtPayload[b'q'] == b'get_peers' and packet[IP].src == owner_ip:
-                client_id = to_hex(bhtPayload[b'a'][b'id'])
+            if b'q' in bht_payload and bht_payload[b'q'] == b'get_peers' and packet[IP].src == owner_ip:
+                client_id = to_hex(bht_payload[b'a'][b'id'])
                 if not client_id in client_ids:
                     client_ids.append(client_id)
-                    transaction_ids[client_id] = [to_hex(bhtPayload[b't'])]
+                    transaction_ids[client_id] = [to_hex(bht_payload[b't'])]
                     client_peers[client_id] = []
 
-                transaction_ids[client_id].append(to_hex(bhtPayload[b't']))
+                transaction_ids[client_id].append(to_hex(bht_payload[b't']))
             
             # handle BT-DHT responses
-            elif b'y' in bhtPayload and bhtPayload[b'y'] == b'r':
-                trans_id = to_hex(bhtPayload[b't'])
+            elif b'y' in bht_payload and bht_payload[b'y'] == b'r':
+                transaction_id = to_hex(bht_payload[b't'])
                 for client_id in client_ids:
                     transactions = transaction_ids[client_id]
 
-                    if trans_id in transactions:
-                        if b'r' in bhtPayload and b'nodes' in bhtPayload[b'r']:
-                            node_list = bhtPayload[b'r'][b'nodes']
+                    if transaction_id in transactions:
+                        if b'r' in bht_payload and b'nodes' in bht_payload[b'r']:
+                            node_list = bht_payload[b'r'][b'nodes']
                             sliced_ids = [node_list[i:i+26] for i in range(0, len(node_list), 26)]
 
                             nodes = list(map(
@@ -517,10 +530,10 @@ elif operation == "rtable":
         client_peers[single_client_peers] = list(set(client_peers[single_client_peers]))
         client_peers[single_client_peers].sort(key=lambda node: node.distance)
 
-        previousDistance = -1
+        previous_distance = -1
         for node in client_peers[single_client_peers]:
-            if (node.distance > previousDistance):
-                previousDistance = node.distance
+            if (node.distance > previous_distance):
+                previous_distance = node.distance
                 print("\ndistance", node.distance)
             print(node)
         print()

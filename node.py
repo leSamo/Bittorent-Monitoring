@@ -16,9 +16,11 @@ class Node:
     is_bootstrap: bool
     distance: int
 
+    # What happends when Node is printed
     def __repr__(self):
         id = "Unknown" if self.id == "Unknown" else binascii.hexlify(self.id).decode()
         return f"{id.ljust(40)} {str(self.port).ljust(5)} {self.ip_address}"
 
+    # Necessary for using set of Nodes
     def __hash__(self):
         return hash((self.id, self.ip_address, self.port, self.is_bootstrap, self.distance))
