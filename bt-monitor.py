@@ -30,6 +30,9 @@ python3 bt-monitor -pcap <path_to_pcap_file> [-init|-peers|-download|-rtable]
   -rtable: returns the routing table of the client
 """
 
+# Bittorrent command for 
+BT_PIECE = 7
+
 # ----------------
 # ARGUMENT PARSING
 # ----------------
@@ -298,25 +301,26 @@ elif operation == "download":
             dport = packet[UDP].dport
             payload = bytes(packet[UDP].payload)
 
+        # Handle UDP handshakes
         if UDP in packet:
-            # extract connection id from handshake
-            # two connection ids, one each way
-            # UDP handshake is 88 bytes long (20 uTP + 68 BT)
 
-            # Handle UDP Bittorrent handshake
+            # UDP Bittorrent handshake is 88 bytes long (20 uTP + 68 BT)
             if len(payload) >= 88 and payload[20] == 19 and payload[21:40] == b'BitTorrent protocol':
                 dst = packet[IP].dst
                 src = packet[IP].src
                 connection_id = payload[2:4]
                 info_hash = payload[48:68]
 
+                # Only include incoming handshakes (we don't care about seeding)
                 if dst == client_ip:
                     udp_handshaked_ips.add((src, sport, connection_id, to_hex(info_hash)))
 
+        # Handle TCP handshakes
         if TCP in packet:
             if len(payload) > 19:
-                protocolNameLength = int(payload[0])
-                if protocolNameLength == 19 and payload[1:20] == b'BitTorrent protocol':
+                protocol_name_length = int(payload[0])
+
+                if protocol_name_length == 19 and payload[1:20] == b'BitTorrent protocol':
                     reserved = payload[20:28]
                     info_hash = payload[28:48]
                     peer_id = payload[48:68]
@@ -332,15 +336,20 @@ elif operation == "download":
                         }]
                     }
 
+                    # Only include outgoing handshakes
                     if (packet[IP].dst != client_ip):
                         tcp_handshaked_ips.add((packet[IP].dst, packet[TCP].dport, to_hex(info_hash)))
 
+    # Handle incoming TCP Bittorrent packets with piece command and their continuation
     for handshaked_ip, handshaked_port, info_hash in tcp_handshaked_ips:
         tcp_streams = []
         pieces = set()
 
         for (packet_index, packet) in enumerate(packets):
-            if IP in packet and packet[IP].src == handshaked_ip and TCP in packet and packet[TCP].sport == handshaked_port:
+            if (IP in packet and
+                packet[IP].src == handshaked_ip and
+                TCP in packet and
+                packet[TCP].sport == handshaked_port):
                 src_ip = packet[IP].src
                 dst_ip = packet[IP].dst
                 src_port = packet[TCP].sport
@@ -349,8 +358,10 @@ elif operation == "download":
 
                 if len(payload) > 4:
                     message_length = int.from_bytes(payload[0:4], byteorder='big')
-    
-                    if int(payload[4]) == 7 and message_length < 1e6:
+
+                    # Handle piece start
+                    # Safety check, it does not make sense to have piece larger than 1e6 bytes
+                    if int(payload[4]) == BT_PIECE and message_length < 1e6:
                         data_in_piece_length = len(payload) - 13
                         piece_index = int.from_bytes(payload[5:9], byteorder='big')
                         piece_offset = int.from_bytes(payload[9:13], byteorder='big')
@@ -359,10 +370,15 @@ elif operation == "download":
 
                         found_stream = None
 
+                        # Try to match packet to existing stream
                         for (index, stream) in enumerate(tcp_streams):
-                            if stream["src_ip"] == src_ip and stream["dst_ip"] == dst_ip and stream["src_port"] == src_port and stream["dst_port"] == dst_port:
+                            if (stream["src_ip"] == src_ip and
+                                stream["dst_ip"] == dst_ip and
+                                stream["src_port"] == src_port and
+                                stream["dst_port"] == dst_port):
                                 found_stream = index
 
+                        # If stream is not found, create a new one
                         if found_stream is None:
                             tcp_streams.append({
                                 "src_ip": src_ip,
@@ -376,25 +392,35 @@ elif operation == "download":
 
                         files[info_hash]["size"] += data_in_piece_length
 
+                    # Handle piece continuation
                     else:
                         found_stream = None
 
+                        # Try to match continuation packet to existing stream
                         for (index, stream) in enumerate(tcp_streams):
-                            if stream["src_ip"] == src_ip and stream["dst_ip"] == dst_ip and stream["src_port"] == src_port and stream["dst_port"] == dst_port:
+                            if (stream["src_ip"] == src_ip and
+                                stream["dst_ip"] == dst_ip and
+                                stream["src_port"] == src_port and
+                                stream["dst_port"] == dst_port):
                                 found_stream = index
 
+                        # Ignore TCP packets which are not continuation of piece command packet
                         if found_stream is not None:
+                            # Ignore empty TCP packets with padding only
                             if len(payload) == 6 and payload == b'\0\0\0\0\0\0':
                                 continue
 
+                            # Record bytes of continuation packets
                             if tcp_streams[found_stream]["remaining_bytes"] >= len(payload):
                                 tcp_streams[found_stream]["remaining_bytes"] -= len(payload)
                                 files[info_hash]["size"] += len(payload)
 
+                            # Handle packets which have continuation data and a new Bittorrent header
                             else:
                                 new_payload = payload[tcp_streams[found_stream]["remaining_bytes"]:]
 
-                                if len(new_payload) > 4 and int(new_payload[4]) == 7:
+                                # Check if continuation header has piece command
+                                if len(new_payload) > 4 and int(new_payload[4]) == BT_PIECE:
                                     message_length = int.from_bytes(new_payload[0:4], byteorder='big')
                                     piece_index = int.from_bytes(new_payload[5:9], byteorder='big')
                                     piece_offset = int.from_bytes(new_payload[9:13], byteorder='big')
@@ -406,6 +432,7 @@ elif operation == "download":
                                     tcp_streams[found_stream]["remaining_bytes"] = message_length - 9 - data_in_piece_length
 
                                     files[info_hash]["size"] += data_in_piece_length
+                                # Failsafe is something goes wrong so that byte count will only be off by a bit
                                 else:
                                     tcp_streams[found_stream]["remaining_bytes"] = 0
 
@@ -416,6 +443,7 @@ elif operation == "download":
             "pieces": sorted(pieces)
         })
 
+    # Handle UDP streams
     for handshaked_ip, handshaked_port, connection_id, info_hash in udp_handshaked_ips:
         file_bytes = 0
         remaining_bytes = 0
@@ -425,18 +453,23 @@ elif operation == "download":
             if UDP in packet and IP in packet and packet[IP].src == handshaked_ip and packet[UDP].sport == handshaked_port:
                 payload = bytes(packet[UDP].payload)
 
+                # uTP header has 20 bytes
                 if len(payload) >= 20:
                     utp_header = payload[0:20]
 
                     this_connection_id = utp_header[2:4]
 
+                    # Match this stream to a known connection id
                     if this_connection_id == connection_id:
                         utp_payload = payload[20:]
 
+                        # Bittorrent header is either at the start or this is a continuation packet
+                        # and header might be inside the payload
                         if remaining_bytes < len(utp_payload):
                             utp_payload = utp_payload[remaining_bytes:]
 
-                            if (len(utp_payload) >= 13 and utp_payload[4] == 7):
+                            # Check if continuation header has piece command
+                            if (len(utp_payload) >= 13 and utp_payload[4] == BT_PIECE):
                                 message_length = int.from_bytes(utp_payload[0:4], byteorder='big')
                                 piece_index = int.from_bytes(utp_payload[5:9], byteorder='big')
                                 piece_offset = int.from_bytes(utp_payload[9:13], byteorder='big')
@@ -447,6 +480,7 @@ elif operation == "download":
 
                                 remaining_bytes = message_length - 9 - data_in_piece_length
                                 file_bytes += message_length - 9
+                        # Only continuation data without new Bittorrent header
                         else:
                             remaining_bytes -= len(utp_payload)
 
@@ -489,9 +523,10 @@ elif operation == "rtable":
             if owner_ip is None:
                 owner_ip = packet[IP].src
             
-            # handle BT-DHT requests
+            # Handle BT-DHT requests
             if b'q' in bht_payload and bht_payload[b'q'] == b'get_peers' and packet[IP].src == owner_ip:
                 client_id = to_hex(bht_payload[b'a'][b'id'])
+
                 if not client_id in client_ids:
                     client_ids.append(client_id)
                     transaction_ids[client_id] = [to_hex(bht_payload[b't'])]
@@ -499,12 +534,13 @@ elif operation == "rtable":
 
                 transaction_ids[client_id].append(to_hex(bht_payload[b't']))
             
-            # handle BT-DHT responses
+            # Handle BT-DHT responses
             elif b'y' in bht_payload and bht_payload[b'y'] == b'r':
                 transaction_id = to_hex(bht_payload[b't'])
                 for client_id in client_ids:
                     transactions = transaction_ids[client_id]
 
+                    # Only record ids from connections which client initiated
                     if transaction_id in transactions:
                         if b'r' in bht_payload and b'nodes' in bht_payload[b'r']:
                             node_list = bht_payload[b'r'][b'nodes']
@@ -526,7 +562,7 @@ elif operation == "rtable":
     for single_client_peers in client_peers.keys():
         print("\nRouting table of", single_client_peers)
 
-        # deduplicate entries and sort them by distance ascendingly
+        # Deduplicate entries and sort them by distance ascendingly
         client_peers[single_client_peers] = list(set(client_peers[single_client_peers]))
         client_peers[single_client_peers].sort(key=lambda node: node.distance)
 
