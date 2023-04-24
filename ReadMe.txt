@@ -3,7 +3,7 @@ Samuel Olekšák
 PDS 2022/23
 
 Requirements:
-Python 3.11
+Python 3.6.7
 Scapy 2.5.0
 
 Packet capture files:

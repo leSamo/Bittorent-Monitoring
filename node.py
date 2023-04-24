@@ -21,3 +21,12 @@ class Node:
 
     def __hash__(self):
         return hash((self.id, self.ip_address, self.port, self.is_bootstrap, self.distance))
+
+@dataclass
+class UDPconn:
+    ip_address: bytes
+    connection_id: bytes
+    direction: str
+
+    def __hash__(self):
+        return hash((self.ip_address, self.connection_id, self.direction))

@@ -10,21 +10,7 @@ import binascii
 import socket
 import getopt
 import sys
-from node import Node
-
-BITTORRENT_MSG_TYPES = {
-    0: "keep_alive",
-    1: "choke",
-    2: "unchoke",
-    3: "interested",
-    4: "not_interested",
-    5: "have",
-    6: "bitfield",
-    7: "request",
-    8: "piece",
-    9: "cancel",
-    10: "port"
-}
+from node import Node, UDPconn
 
 # print to stderr
 def eprint(*args, **kwargs):
@@ -112,6 +98,7 @@ def getDnsReceivedIps(packets):
 def detectReceivedNodes(packets):
     detectedNodes = set()
     dnsReceivedAddresses = getDnsReceivedIps(packets)
+    print(dnsReceivedAddresses)
 
     # Inspect all UDP packets
     for packet in packets:
@@ -125,8 +112,10 @@ def detectReceivedNodes(packets):
             except:
                 continue
 
-            # TODO: Check for get_peers command
-
+                """
+            if IPv6 in packet:
+                print(packet[IPv6].src, packet[IPv6].dst)
+                """
             # handle BT-DHT requests
             if b'a' in bhtPayload and b'id' in bhtPayload[b'a'] and b'q' in bhtPayload and bhtPayload[b'q'] == b'get_peers':
                 dst_ip = packet[IP].dst
@@ -139,6 +128,7 @@ def detectReceivedNodes(packets):
                 if (b'bs' in bhtPayload[b'a'] and bhtPayload[b'a'][b'bs'] == 1) or dst_ip in dnsReceivedAddresses:
                     detectedNodes.add(Node("Unknown", dst_ip, dst_port, True, -1))
                 else:
+                    # TODO dont reset
                     detectedNodes.add(Node("Unknown", dst_ip, dst_port, False, -1))
 
             # Handle BT-DHT responses
@@ -152,6 +142,34 @@ def detectReceivedNodes(packets):
                     if node.ip_address == src_ip and node.port == src_port:
                         node.id = id
                         break
+                
+                if b'nodes' in bhtPayload[b'r']:
+                    node_list = bhtPayload[b'r'][b'nodes']
+                    sliced_ids = [node_list[i:i+26] for i in range(0, len(node_list), 26)]
+
+                    nodes = list(map(
+                        lambda x: Node(
+                            x[0:20],
+                            socket.inet_ntoa(x[20:24]),
+                            int.from_bytes(x[24:26], byteorder='big'),
+                            False,
+                            -1
+                        ),
+                        sliced_ids
+                    ))
+
+                    for node in nodes:
+                        added = False
+
+                        for detectedNode in detectedNodes:
+                            if node.ip_address == detectedNode.ip_address and node.port == detectedNode.port:
+                                detectedNode.id = node.id
+                                added = True
+                                break
+                        
+                        if not added:
+                            detectedNodes.add(node)
+                            
 
     return detectedNodes
 
@@ -172,6 +190,27 @@ def kademlia_distance(node_id1: str, node_id2: str) -> int:
     
     return prefix_length
 
+# goes throught all of the packets and finds the IP address which is sender
+# or receiver in most packets, which is most likely client's address
+def get_client_ip(packets):
+    ip_addresses = {}
+
+    for packet in packets:
+        if IP in packet:
+            src = packet[IP].src
+            dst = packet[IP].dst
+
+            if src not in ip_addresses:
+                ip_addresses[src] = 0
+
+            if dst not in ip_addresses:
+                ip_addresses[dst] = 0
+
+            ip_addresses[src] += 1
+            ip_addresses[dst] += 1
+    
+    return max(ip_addresses, key=lambda k: ip_addresses[k])
+
 # ------------------------------
 # LOADING PACKETS FROM PCAP FILE
 # ------------------------------
@@ -181,6 +220,9 @@ try:
 except Exception as e:
     eprint('Failed to load packets from pcap file', e)
     sys.exit(1)
+
+client_ip = get_client_ip(packets)
+print("Client IP:", client_ip)
 
 # ------------------------------------
 # BRANCH PROGRAM BY SELECTED OPERATION
@@ -206,11 +248,43 @@ elif operation == "peers":
 elif operation == "download":
     files = {}
     handshaked_ips = set()
+    udp_handshaked_ips = set()
 
-    for packet in packets:
+    for (index, packet) in enumerate(packets):
+        sport = None
+        dport = None
+        payload = None
+
+        if IP not in packet:
+            continue
+
         if TCP in packet:
+            sport = packet[TCP].sport
+            dport = packet[TCP].dport
             payload = bytes(packet[TCP].payload)
+        elif UDP in packet:
+            sport = packet[UDP].sport
+            dport = packet[UDP].dport
+            payload = bytes(packet[UDP].payload)
 
+        if UDP in packet:
+            # extract connection id from handshake
+            # two connection ids, one each way
+            # UDP handshake is 88 bytes long (20 uTP + 68 BT)
+
+            # Handle UDP Bittorrent handshake
+            if len(payload) >= 88 and payload[20] == 19 and payload[21:40] == b'BitTorrent protocol':
+                print("UDP handshake", index)
+                dst = packet[IP].dst
+                src = packet[IP].src
+                connection_id = payload[2:4]
+
+                if dst == client_ip:
+                    udp_handshaked_ips.add(UDPconn(src, connection_id, "inbound"))
+                elif src == client_ip:
+                    udp_handshaked_ips.add(UDPconn(dst, connection_id, "outbound"))
+
+        if TCP in packet:
             if len(payload) > 19:
                 protocolNameLength = int(payload[0])
                 if protocolNameLength == 19 and payload[1:20] == b'BitTorrent protocol':
@@ -223,7 +297,7 @@ elif operation == "download":
                         files[toHex(info_hash)]['contributes'].append({
                                 "id": toHex(peer_id),
                                 "ip": packet[IP].dst,
-                                "port": packet[TCP].dport,
+                                "port": dport,
                                 "bytes": 0
                             })
                     else:
@@ -234,12 +308,13 @@ elif operation == "download":
                             "contributes": [{
                                 "id": toHex(peer_id),
                                 "ip": packet[IP].dst,
-                                "port": packet[TCP].dport,
+                                "port": dport,
                                 "bytes": 0
                             }]
                         }
 
-                    handshaked_ips.add(packet[IP].dst)
+                    if (packet[IP].dst != client_ip):
+                        handshaked_ips.add(packet[IP].dst)
 
                     #print("Handshake", toHex(reserved), toHex(info_hash), toHex(peer_id))
             
@@ -258,17 +333,110 @@ elif operation == "download":
                         
                         for file in files.keys():
                             for (index, contributor) in enumerate(files[file]["contributes"]):
-                                if contributor["ip"] == packet[IP].src and contributor["port"] == packet[TCP].sport:
+                                if contributor["ip"] == packet[IP].src and contributor["port"] == sport:
                                     info_hash = file
                                     files[info_hash]["contributes"][index]["bytes"] += message_length - 13
+
+                        if info_hash is None:
+                            print("Uh oh")
+                            continue
  
                         files[info_hash]["streams"] += 1
                         files[info_hash]["size"] += message_length - 13
                         files[info_hash]["pieces"].add(piece_index)
     
                         #print(message_length, msg_type, piece_index, piece_offset)
+    
+    for handshaked_ip in handshaked_ips:
+        tcp_streams = []
+        pieces = set()
+
+        for (packet_index, packet) in enumerate(packets):
+            if IP in packet and (packet[IP].src in handshaked_ips or packet[IP].dst in handshaked_ips) and TCP in packet:
+                src_ip = packet[IP].src
+                dst_ip = packet[IP].dst
+                src_port = packet[TCP].sport
+                dst_port = packet[TCP].dport
+                payload = bytes(packet[TCP].payload)
+
+                if len(payload) > 4:
+                    message_length = int.from_bytes(payload[0:4], byteorder='big')
+    
+                    if int(payload[4]) == 7 and message_length < 1e6:
+                        data_in_piece_length = len(payload) - 13
+                        piece_index = int.from_bytes(payload[5:9], byteorder='big')
+                        piece_offset = int.from_bytes(payload[9:13], byteorder='big')
+
+                        pieces.add(piece_index)
+
+                        found_stream = None
+
+                        for (index, stream) in enumerate(tcp_streams):
+                            if stream["src_ip"] == src_ip and stream["dst_ip"] == dst_ip and stream["src_port"] == src_port and stream["dst_port"] == dst_port:
+                                found_stream = index
+
+                        if found_stream is None:
+                            tcp_streams.append({
+                                "src_ip": src_ip,
+                                "dst_ip": dst_ip,
+                                "src_port": src_port,
+                                "dst_port": dst_port,
+                                "remaining_bytes": message_length - data_in_piece_length
+                            })
+                        else:
+                            tcp_streams[found_stream]["remaining_bytes"] = message_length - data_in_piece_length
+
+                        print(packet_index, "frontless", message_length - data_in_piece_length, len(payload))
+                    else:
+                        found_stream = None
+
+                        for (index, stream) in enumerate(tcp_streams):
+                            if stream["src_ip"] == src_ip and stream["dst_ip"] == dst_ip and stream["src_port"] == src_port and stream["dst_port"] == dst_port:
+                                found_stream = index
+
+                        if packet_index == 32328:
+                            print("eeee", tcp_streams[found_stream]["remaining_bytes"])
+
+                        if packet_index == 32348:
+                            print("ffff", tcp_streams[found_stream]["remaining_bytes"])
+                
+                        if found_stream is not None:
+                            if len(payload) == 0:
+                                continue
+
+                            if tcp_streams[found_stream]["remaining_bytes"] >= len(payload):
+                                tcp_streams[found_stream]["remaining_bytes"] -= len(payload)
+                                print(packet_index, "subtracting to", tcp_streams[found_stream]["remaining_bytes"])
+
+                            else:
+                                print("found header", packet_index, tcp_streams[found_stream]["remaining_bytes"], len(payload))
+                                new_payload = payload[tcp_streams[found_stream]["remaining_bytes"]:]
+
+                                if len(new_payload) > 4 and int(new_payload[4]) == 7:
+                                    print("here", packet_index, len(new_payload))
+                                    message_length = int.from_bytes(new_payload[0:4], byteorder='big')
+                                    print(packet_index, tcp_streams[found_stream]["remaining_bytes"], new_payload[4])
+                                    piece_index = int.from_bytes(new_payload[5:9], byteorder='big')
+                                    piece_offset = int.from_bytes(new_payload[9:13], byteorder='big')
+
+                                    pieces.add(piece_index)
+
+                                    print("piece", piece_index)
+
+                                    data_in_piece_length = len(new_payload) - 13
+
+                                    tcp_streams[found_stream]["remaining_bytes"] = message_length - data_in_piece_length
+                                    print("updating to", message_length - data_in_piece_length)
+                                else:
+                                    tcp_streams[found_stream]["remaining_bytes"] = 0
+                                    print("updating to", 0)
+
+        print(tcp_streams[0])
+        print(len(pieces))
+        print(sorted(pieces))
             
-    #print(handshaked_ips)
+    print(handshaked_ips)
+    print("UDP handshakes", udp_handshaked_ips)
 
     for file in files.keys():
         print("Infohash:", file)
@@ -286,6 +454,7 @@ elif operation == "rtable":
     client_ids = []
     transaction_ids = {}
     client_peers = {}
+    owner_ip = None
 
     # Inspect all UDP packets
     for (index, packet) in enumerate(packets):
@@ -299,8 +468,11 @@ elif operation == "rtable":
             except:
                 continue
             
+            if owner_ip is None:
+                owner_ip = packet[IP].src
+            
             # handle BT-DHT requests
-            if b'q' in bhtPayload and bhtPayload[b'q'] == b'get_peers':
+            if b'q' in bhtPayload and bhtPayload[b'q'] == b'get_peers' and packet[IP].src == owner_ip:
                 client_id = toHex(bhtPayload[b'a'][b'id'])
                 if not client_id in client_ids:
                     client_ids.append(client_id)
