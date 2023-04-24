@@ -381,12 +381,12 @@ elif operation == "download":
                                 "dst_ip": dst_ip,
                                 "src_port": src_port,
                                 "dst_port": dst_port,
-                                "remaining_bytes": message_length - data_in_piece_length
+                                "remaining_bytes": message_length - 9 - data_in_piece_length
                             })
                         else:
-                            tcp_streams[found_stream]["remaining_bytes"] = message_length - data_in_piece_length
+                            tcp_streams[found_stream]["remaining_bytes"] = message_length - 9 - data_in_piece_length
 
-                        print(packet_index, "frontless", message_length - data_in_piece_length, len(payload))
+                        print(packet_index, "frontless", message_length - 9 - data_in_piece_length)
                     else:
                         found_stream = None
 
@@ -401,7 +401,7 @@ elif operation == "download":
                             print("ffff", tcp_streams[found_stream]["remaining_bytes"])
                 
                         if found_stream is not None:
-                            if len(payload) == 0:
+                            if len(payload) == 6 and payload == b'\0\0\0\0\0\0':
                                 continue
 
                             if tcp_streams[found_stream]["remaining_bytes"] >= len(payload):
@@ -425,8 +425,8 @@ elif operation == "download":
 
                                     data_in_piece_length = len(new_payload) - 13
 
-                                    tcp_streams[found_stream]["remaining_bytes"] = message_length - data_in_piece_length
-                                    print("updating to", message_length - data_in_piece_length)
+                                    tcp_streams[found_stream]["remaining_bytes"] = message_length - 9 - data_in_piece_length
+                                    print("updating to", message_length - 9 - data_in_piece_length)
                                 else:
                                     tcp_streams[found_stream]["remaining_bytes"] = 0
                                     print("updating to", 0)
