@@ -279,11 +279,10 @@ elif operation == "download":
                 dst = packet[IP].dst
                 src = packet[IP].src
                 connection_id = payload[2:4]
-
-                print("UDP handshake", index, toHex(connection_id))
+                info_hash = payload[48:68]
 
                 if dst == client_ip:
-                    udp_handshaked_ips.add((src, sport, connection_id))
+                    udp_handshaked_ips.add((src, sport, connection_id, toHex(info_hash)))
 
         if TCP in packet:
             if len(payload) > 19:
@@ -310,7 +309,6 @@ elif operation == "download":
     for handshaked_ip, handshaked_port, info_hash in tcp_handshaked_ips:
         tcp_streams = []
         pieces = set()
-        current_pieces = 0
 
         for (packet_index, packet) in enumerate(packets):
             if IP in packet and packet[IP].src == handshaked_ip and TCP in packet and packet[TCP].sport == handshaked_port:
@@ -389,9 +387,10 @@ elif operation == "download":
             "pieces": sorted(pieces)
         })
 
-    file_bytes = 0
-    for handshaked_ip, handshaked_port, connection_id in udp_handshaked_ips:
+    for handshaked_ip, handshaked_port, connection_id, info_hash in udp_handshaked_ips:
+        file_bytes = 0
         remaining_bytes = 0
+        pieces = set()
 
         for (packet_index, packet) in enumerate(packets):
             if UDP in packet and IP in packet and packet[IP].src == handshaked_ip and packet[UDP].sport == handshaked_port:
@@ -413,7 +412,7 @@ elif operation == "download":
                                 piece_index = int.from_bytes(utp_payload[5:9], byteorder='big')
                                 piece_offset = int.from_bytes(utp_payload[9:13], byteorder='big')
 
-                                print("aaa", piece_index)
+                                pieces.add(piece_index)
 
                                 data_in_piece_length = len(utp_payload) - 13
 
@@ -421,16 +420,19 @@ elif operation == "download":
                                 file_bytes += message_length - 9
                         else:
                             remaining_bytes -= len(utp_payload)
-                        
-                        print(remaining_bytes)
 
-        print("bbb", file_bytes)
-                    
+        files[info_hash]["pieces"].extend(sorted(pieces))
+        files[info_hash]["contributes"].append({
+            "ip": handshaked_ip,
+            "port": handshaked_port,
+            "pieces": sorted(pieces)
+        })
+        files[info_hash]["size"] += file_bytes
 
     for file in files.keys():
         print("Infohash:", file)
         print("Size:", files[file]["size"], "B")
-        print("Pieces:", len(files[file]["pieces"]))
+        print("Pieces:", len(list(set(files[file]["pieces"]))))
         print("Contributors:")
         
         for contributor in files[file]["contributes"]:
