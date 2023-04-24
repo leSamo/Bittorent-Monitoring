@@ -11,6 +11,9 @@ Zip file contents:
   |- q-download.pcapng
   |- q-installation.pcapng
   |- q-startup.pcapng
+|- torrent/
+  |- images.torrent
+  |- mnist.torrent
 |- bdecoder.py
 |- bt-monitor
 |- bt-monitor.py
@@ -18,4 +21,3 @@ Zip file contents:
 |- node.py
 |- Readme.txt
 |- requirements.txt
-|- test.torrent

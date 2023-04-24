@@ -181,15 +181,15 @@ def kademlia_distance(node_id1: str, node_id2: str) -> int:
     id1 = bin(int(node_id1, 16))[2:].zfill(160)
     id2 = bin(int(node_id2, 16))[2:].zfill(160)
     
-    prefix_length = 0
+    prefix_bit_count = 0
 
     for i in range(len(id1)):
-        if id1[i] == id2[i]:
-            prefix_length += 1
-        else:
+        if id1[i] != id2[i]:
             break
+        else:
+            prefix_bit_count += 1
     
-    return prefix_length
+    return prefix_bit_count
 
 # goes throught all of the packets and finds the IP address which is sender
 # or receiver in most packets, which is most likely client's address
@@ -298,64 +298,32 @@ elif operation == "download":
                     # TODO: dedupe
                     if toHex(info_hash) in files:
                         files[toHex(info_hash)]['contributes'].append({
-                                "id": toHex(peer_id),
                                 "ip": packet[IP].dst,
                                 "port": dport,
-                                "bytes": 0
+                                "pieces": []
                             })
                     else:
                         files[toHex(info_hash)] = {
                             "size": 0,
                             "streams": 0,
-                            "pieces": set(),
+                            "pieces": [],
                             "contributes": [{
-                                "id": toHex(peer_id),
                                 "ip": packet[IP].dst,
                                 "port": dport,
-                                "bytes": 0
+                                "pieces": []
                             }]
                         }
 
                     if (packet[IP].dst != client_ip):
-                        handshaked_ips.add(packet[IP].dst)
+                        handshaked_ips.add((packet[IP].dst, packet[TCP].dport, toHex(info_hash)))
 
-                    #print("Handshake", toHex(reserved), toHex(info_hash), toHex(peer_id))
-            
-            if packet[IP].src or packet[IP].dst in handshaked_ips:
-                if len(payload) > 4:
-                    message_length = int.from_bytes(payload[0:4], byteorder='big')
-
-                    # handle piece messages
-                    if int(payload[4]) == 7 and message_length < 1e6:
-                        msg_type = "piece"
-                        piece_index = int.from_bytes(payload[5:9], byteorder='big')
-                        piece_offset = int.from_bytes(payload[9:13], byteorder='big')
-
-                        # find out info_hash based on handshake with this src_ip
-                        info_hash = None
-                        
-                        for file in files.keys():
-                            for (index, contributor) in enumerate(files[file]["contributes"]):
-                                if contributor["ip"] == packet[IP].src and contributor["port"] == sport:
-                                    info_hash = file
-                                    files[info_hash]["contributes"][index]["bytes"] += message_length - 13
-
-                        if info_hash is None:
-                            print("Uh oh")
-                            continue
- 
-                        files[info_hash]["streams"] += 1
-                        files[info_hash]["size"] += message_length - 13
-                        files[info_hash]["pieces"].add(piece_index)
-    
-                        #print(message_length, msg_type, piece_index, piece_offset)
-    
-    for handshaked_ip in handshaked_ips:
+    for handshaked_ip, handshaked_port, info_hash in handshaked_ips:
         tcp_streams = []
         pieces = set()
+        current_pieces = 0
 
         for (packet_index, packet) in enumerate(packets):
-            if IP in packet and (packet[IP].src in handshaked_ips or packet[IP].dst in handshaked_ips) and TCP in packet:
+            if IP in packet and packet[IP].src == handshaked_ip and TCP in packet and packet[TCP].sport == handshaked_port:
                 src_ip = packet[IP].src
                 dst_ip = packet[IP].dst
                 src_port = packet[TCP].sport
@@ -389,6 +357,8 @@ elif operation == "download":
                         else:
                             tcp_streams[found_stream]["remaining_bytes"] = message_length - 9 - data_in_piece_length
 
+                        files[info_hash]["size"] += data_in_piece_length
+
                     else:
                         found_stream = None
 
@@ -402,6 +372,7 @@ elif operation == "download":
 
                             if tcp_streams[found_stream]["remaining_bytes"] >= len(payload):
                                 tcp_streams[found_stream]["remaining_bytes"] -= len(payload)
+                                files[info_hash]["size"] += len(payload)
 
                             else:
                                 new_payload = payload[tcp_streams[found_stream]["remaining_bytes"]:]
@@ -416,13 +387,17 @@ elif operation == "download":
                                     data_in_piece_length = len(new_payload) - 13
 
                                     tcp_streams[found_stream]["remaining_bytes"] = message_length - 9 - data_in_piece_length
+
+                                    files[info_hash]["size"] += data_in_piece_length
                                 else:
                                     tcp_streams[found_stream]["remaining_bytes"] = 0
 
-        print(len(pieces))
-        print(sorted(pieces))
-            
-    print(handshaked_ips)
+        files[info_hash]["pieces"].extend(sorted(pieces))
+        files[info_hash]["contributes"].append({
+            "ip": handshaked_ip,
+            "port": handshaked_port,
+            "pieces": sorted(pieces)
+        })
 
     for file in files.keys():
         print("Infohash:", file)
@@ -431,10 +406,8 @@ elif operation == "download":
         print("Contributors:")
         
         for contributor in files[file]["contributes"]:
-            if contributor["bytes"] > 0:
-                print("-", contributor["ip"] + ":" + str(contributor["port"]), contributor["bytes"], "B")
-        print()
-
+            if len(contributor["pieces"]) > 0:
+                print("-", contributor["ip"] + ":" + str(contributor["port"]), len(contributor["pieces"]), "pieces")
 
 elif operation == "rtable":
     client_ids = []
