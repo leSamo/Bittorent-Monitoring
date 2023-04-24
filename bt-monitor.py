@@ -386,7 +386,6 @@ elif operation == "download":
                         else:
                             tcp_streams[found_stream]["remaining_bytes"] = message_length - 9 - data_in_piece_length
 
-                        print(packet_index, "frontless", message_length - 9 - data_in_piece_length)
                     else:
                         found_stream = None
 
@@ -394,49 +393,33 @@ elif operation == "download":
                             if stream["src_ip"] == src_ip and stream["dst_ip"] == dst_ip and stream["src_port"] == src_port and stream["dst_port"] == dst_port:
                                 found_stream = index
 
-                        if packet_index == 32328:
-                            print("eeee", tcp_streams[found_stream]["remaining_bytes"])
-
-                        if packet_index == 32348:
-                            print("ffff", tcp_streams[found_stream]["remaining_bytes"])
-                
                         if found_stream is not None:
                             if len(payload) == 6 and payload == b'\0\0\0\0\0\0':
                                 continue
 
                             if tcp_streams[found_stream]["remaining_bytes"] >= len(payload):
                                 tcp_streams[found_stream]["remaining_bytes"] -= len(payload)
-                                print(packet_index, "subtracting to", tcp_streams[found_stream]["remaining_bytes"])
 
                             else:
-                                print("found header", packet_index, tcp_streams[found_stream]["remaining_bytes"], len(payload))
                                 new_payload = payload[tcp_streams[found_stream]["remaining_bytes"]:]
 
                                 if len(new_payload) > 4 and int(new_payload[4]) == 7:
-                                    print("here", packet_index, len(new_payload))
                                     message_length = int.from_bytes(new_payload[0:4], byteorder='big')
-                                    print(packet_index, tcp_streams[found_stream]["remaining_bytes"], new_payload[4])
                                     piece_index = int.from_bytes(new_payload[5:9], byteorder='big')
                                     piece_offset = int.from_bytes(new_payload[9:13], byteorder='big')
 
                                     pieces.add(piece_index)
 
-                                    print("piece", piece_index)
-
                                     data_in_piece_length = len(new_payload) - 13
 
                                     tcp_streams[found_stream]["remaining_bytes"] = message_length - 9 - data_in_piece_length
-                                    print("updating to", message_length - 9 - data_in_piece_length)
                                 else:
                                     tcp_streams[found_stream]["remaining_bytes"] = 0
-                                    print("updating to", 0)
 
-        print(tcp_streams[0])
         print(len(pieces))
         print(sorted(pieces))
             
     print(handshaked_ips)
-    print("UDP handshakes", udp_handshaked_ips)
 
     for file in files.keys():
         print("Infohash:", file)
