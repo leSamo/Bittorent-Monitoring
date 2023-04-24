@@ -16,7 +16,7 @@ class Node:
     distance: int
 
     def __repr__(self):
-        id = "Unknown (did not respond)" if self.id == "Unknown" else binascii.hexlify(self.id).decode()
+        id = "Unknown" if self.id == "Unknown" else binascii.hexlify(self.id).decode()
         return f"{id.ljust(40)} {str(self.port).ljust(5)} {self.ip_address}"
 
     def __hash__(self):
