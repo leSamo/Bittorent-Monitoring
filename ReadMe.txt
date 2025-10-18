@@ -18,7 +18,7 @@ Zip file contents:
 |- bdecoder.py
 |- bt-monitor
 |- bt-monitor.py
-|- xoleks00.pdf
+|- documentation.pdf
 |- node.py
 |- Readme.txt
 |- requirements.txt
