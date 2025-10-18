@@ -27,7 +27,7 @@ Analysis tool:
 bt-monitor - script for monitoring of BitTorrent traffic in LAN
 
 Usage:
-python3 bt-monitor -pcap <path_to_pcap_file> [-init|-peers|-download|-rtable]
+python3 bt-monitor.py -pcap <path_to_pcap_file> [-init|-peers|-download|-rtable]
   -init: returns a list of detected bootstrap nodes
   -peers: returns a list of detected neighbors
   -download: returns file info_hash, size, chunks, contributes
